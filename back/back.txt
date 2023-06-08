@@ -1,0 +1,170 @@
+    def __create_s3(self):
+        bucket1 = s3.Bucket(self, "sonar-bucket-one", bucket_name="test-bucket-sonar-one",
+                            removal_policy=RemovalPolicy.DESTROY)
+        # bucket1.add_to_resource_policy()
+
+    def __create_ecs_asg(self):
+        # Create Application Load Balancer
+        security_group_al = ec2.SecurityGroup(self, "SG_ECS_EC2", vpc=self.vpc)
+        security_group_al.add_ingress_rule(
+            peer=ec2.Peer.any_ipv4(),
+            connection=ec2.Port.all_traffic()
+        )
+
+        alb = elasticloadbalancing.ApplicationLoadBalancer(self, "ECS_EC2_ALB", security_group=security_group_al,
+                                                           vpc=self.vpc, vpc_subnets=ec2.SubnetSelection(
+                subnet_type=ec2.SubnetType.PUBLIC),
+                                                           internet_facing=True)
+        target_group_http = elasticloadbalancing.ApplicationTargetGroup(self, "TargetGroup-ECS_EC2_ALB", port=80,
+                                                                        vpc=self.vpc,
+                                                                        protocol=elasticloadbalancing.ApplicationProtocol.HTTP,
+                                                                        target_type=elasticloadbalancing.TargetType.IP)
+        target_group_http.configure_health_check(protocol=elasticloadbalancing.Protocol.HTTP)
+
+        listener_http = alb.add_listener("http-listener-ecs-ec2", open=True, port=80)
+
+        # Create an ECS EC2 Servive cluster
+        cluster = ecs.Cluster(self, "Cluster", vpc=self.vpc)
+
+        autoscaling_gr = cluster.add_capacity("DefaultAutoScalingGroupCapacity",
+                                              instance_type=ec2.InstanceType("t2.micro"),
+                                              desired_capacity=3,
+                                              vpc_subnets=ec2   .SubnetSelection(
+                                                  subnet_type=ec2.SubnetType.PRIVATE_WITH_EGRESS)
+                                              )
+        autoscaling_gr.role.add_managed_policy(iam.ManagedPolicy.from_aws_managed_policy_name("AmazonSSMFullAccess"))
+
+        execution_role_ecs = iam.Role(self,
+                                      "ecs-devops-execution-role-ecs",
+                                      assumed_by=iam.ServicePrincipal("ecs-tasks.amazonaws.com"),
+                                      role_name="eecs-devops-execution-role-ecs")
+
+        execution_role_ecs.add_to_policy(iam.PolicyStatement(effect=iam.Effect.ALLOW,
+                                                             resources=["*"],
+                                                             actions=["ecr:GetAuthorizationToken",
+                                                                      "ecr:BatchCheckLayerAvailability",
+                                                                      "ecr:GetDownloadUrlForLayer",
+                                                                      "ecr:BatchGetImage",
+                                                                      "logs:CreateLogStream",
+                                                                      "logs:PutLogEvents",
+                                                                      "SES:*"]))
+
+        task_definition = ecs.Ec2TaskDefinition(self, "TaskDef", task_role=execution_role_ecs,
+                                                network_mode=ecs.NetworkMode.AWS_VPC)
+
+        container_ecs_ec2 = task_definition.add_container("DefaultContainer",
+                                                          image=ecs.ContainerImage.from_registry(
+                                                              "amazon/amazon-ecs-sample"),
+                                                          memory_limit_mib=256,
+                                                          port_mappings=[ecs.PortMapping(container_port=80)]
+                                                          )
+
+        security_ecs_ec2 = ec2.SecurityGroup(self, "ecs-sg-ec2", allow_all_outbound=True, vpc=self.vpc)
+        security_ecs_ec2.add_egress_rule(security_group_al, connection=ec2.Port.all_traffic())
+        # Instantiate an Amazon ECS Service
+        service_ecs_ec2 = ecs.Ec2Service(self, "Service_EC2",
+                                         cluster=cluster,
+                                         task_definition=task_definition,
+                                         security_groups=[security_ecs_ec2]
+                                         )
+
+        target_group_http.add_target(service_ecs_ec2)
+        listener_http.add_target_groups("http-target-ecs-ec2", target_groups=[target_group_http])
+
+    # cluster_2 = ecs.Cluster(self, "Cluster_2", vpc=self.vpc)
+    #
+    # autoscaling_gr_2 = cluster_2.add_capacity("DefaultAutoScalingGroupCapacity_2",
+    #                                         instance_type=ec2.InstanceType("t2.micro"),
+    #                                         desired_capacity=3,
+    #                                         vpc_subnets=ec2.SubnetSelection(
+    #                                             subnet_type=ec2.SubnetType.PRIVATE_WITH_EGRESS)
+    #                                         )
+    # autoscaling_gr_2.role.add_managed_policy(iam.ManagedPolicy.from_aws_managed_policy_name("AmazonSSMFullAccess"))
+    #
+    # task_definition_2 = ecs.Ec2TaskDefinition(self, "TaskDef_2")
+    #
+    # task_definition_2.add_container("DefaultContainer_2",
+    #                                 image=ecs.ContainerImage.from_registry("amazon/amazon-ecs-sample"),
+    #                                 memory_limit_mib=512,
+    #
+    #                                 )
+    #
+    # # Instantiate an Amazon ECS Service
+    # ecs.Ec2Service(self, "Service_2",
+    #                cluster=cluster_2,
+    #                task_definition=task_definition_2,
+    #                # vpc_subnets=ec2.SubnetSelection(
+    #                #     subnet_type=ec2.SubnetType.PRIVATE_WITH_EGRESS)
+    #
+    #                )
+
+    def __create_ecs_fargate(self):
+        # The code that defines your stack goes here
+
+        cluster = ecs.Cluster(self,
+                              "ecs-devops-cluster",
+                              cluster_name="ecs-devops-cluster",
+                              vpc=self.vpc)
+
+        # image = ecs.ContainerImage.from_registry("amazon/amazon-ecs-sample")
+        #
+        # ecs_patterns.ApplicationLoadBalancedFargateService(self, id="FargateBalancer",cluster=cluster, circuit_breaker={"rollback": True},
+        #                                                    cpu=256, desired_count=1, task_image_options={
+        #         "image": image,
+        #         "containerPort": 80
+        #     },load_balancer_name="ProvaFargate")
+
+        execution_role = iam.Role(self,
+                                  "ecs-devops-execution-role",
+                                  assumed_by=iam.ServicePrincipal("ecs-tasks.amazonaws.com"),
+                                  role_name="ecs-devops-execution-role")
+
+        execution_role.add_to_policy(iam.PolicyStatement(effect=iam.Effect.ALLOW,
+                                                         resources=["*"],
+                                                         actions=["ecr:GetAuthorizationToken",
+                                                                  "ecr:BatchCheckLayerAvailability",
+                                                                  "ecr:GetDownloadUrlForLayer",
+                                                                  "ecr:BatchGetImage",
+                                                                  "logs:CreateLogStream",
+                                                                  "logs:PutLogEvents"]))
+
+        task_definition = ecs.FargateTaskDefinition(self,
+                                                    "ecs-devops-task-definition",
+                                                    execution_role=execution_role,
+                                                    family="ecs-devops-task-definition")
+
+        container = task_definition.add_container("ecs-devops-sandbox",
+                                                  image=ecs.ContainerImage.from_registry("amazon/amazon-ecs-sample"),
+                                                  port_mappings=[ecs.PortMapping(container_port=80)])
+
+        # container.add_port_mappings({"containerPort": 80})
+        service = ecs.FargateService(self,
+                                     "ecs-devops-service",
+                                     cluster=cluster,
+                                     task_definition=task_definition,
+                                     service_name="ecs-devops-service",
+
+                                     vpc_subnets=ec2.SubnetSelection(
+                                         subnet_type=ec2.SubnetType.PRIVATE_WITH_EGRESS)
+                                     )
+        security_group_al = ec2.SecurityGroup(self, "SG", vpc=self.vpc)
+        security_group_al.add_ingress_rule(
+            peer=ec2.Peer.any_ipv4(),
+            connection=ec2.Port.all_traffic()
+        )
+        ecs_patterns.ApplicationLoadBalancedFargateService(self, "Service",
+                                                           cluster=cluster,
+                                                           memory_limit_mib=256,
+                                                           desired_count=1,
+                                                           cpu=256,
+                                                           task_definition=task_definition,
+                                                           load_balancer_name="ProvaLoadBalancer",
+                                                           security_groups=[
+                                                               security_group_al],
+                                                           task_subnets=ec2.SubnetSelection(
+                                                               subnet_type=ec2.SubnetType.PUBLIC)
+                                                           )
+
+        log_group = aws_logs.LogGroup(self,
+                                      "ecs-devops-service-logs-groups",
+                                      log_group_name="ecs-devops-service-logs")
